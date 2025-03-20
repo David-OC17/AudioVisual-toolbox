@@ -2,6 +2,9 @@
 
 #include "common.h"
 
+void TEST_libraries();
+void TEST_audio2image();
+
 /* Simple test for FFTW, OpenCV and FFmpeg libraries. */
 void TEST_libraries() {
     // Test FFTW
@@ -56,4 +59,8 @@ void TEST_libraries() {
         std::cout << "FFmpeg successfully opened the video file!" << std::endl;
         avformat_close_input(&pFormatCtx);  // Close the file after testing
     }
+}
+
+void TEST_audio2image() {
+
 }

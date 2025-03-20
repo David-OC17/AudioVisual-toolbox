@@ -1,13 +1,15 @@
 #pragma once
 
 #include <stdint.h>
+
+#include <cstdlib>
+#include <limits>
+#include <sstream>
 #include <string>
 #include <tuple>
-#include <limits>
 
 #include "common.h"
 
-/* Audio2Image */
 enum class AUDIO2IMAGE_RET_T {
   GOOD_IMPORT,
   GOOD_CONVERSION,
@@ -15,6 +17,8 @@ enum class AUDIO2IMAGE_RET_T {
 
   UNFILLED_MATRIX,
   INVALID_AUDIO_FILE_TYPE,
+  AUDIO_FILE_DURATION_TOO_SHORT,
+  CANNOT_CLIP_AUDIO_FILE,
 
   FFMPEG_ERROR_OPENING_AUDIO_FILE,
   FFMPEG_ERROR_FINDING_AUDIO_STREAM_INFO,
@@ -30,8 +34,18 @@ enum class AUDIO2IMAGE_RET_T {
 
 class Audio2Image {
  private:
-  const int IMAGE_SIZE_X_PIXELS = 2000;
-  const int IMAGE_SIZE_Y_PIXELS = 2000;
+  const int IMAGE_SIZE_X_PIXELS = 210;
+  const int IMAGE_SIZE_Y_PIXELS = 210;
+  const int NUM_SAMPLES_PER_SEGMENT =
+      CD_AUDIO_FILE_FREQUENCY_HZ * 10 / (210 * 210);
+  const double AUDIO_DURATION_SEC = 10.0;
+
+  double get_audio_duration(const std::string filename);
+
+  std::string generateClippedFilename(const std::string& filename, double new_duration);
+
+  bool clip_audio_file(const std::string filename,
+                       const std::string new_filename, double new_duration);
 
   std::tuple<double, double> compute_average_frequency_and_amplitude(
       fftw_complex* out, int num_samples);

@@ -56,6 +56,4 @@ void TEST_libraries() {
         std::cout << "FFmpeg successfully opened the video file!" << std::endl;
         avformat_close_input(&pFormatCtx);  // Close the file after testing
     }
-
-    return 0;
 }

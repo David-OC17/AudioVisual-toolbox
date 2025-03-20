@@ -5,26 +5,36 @@
 ==========================================*/
 
 double Audio2Image::get_audio_duration(const std::string filename) {
-  if (!(std::regex_match(filename, CDAudioFormatsRegex::WAV) ||
-        std::regex_match(filename, CDAudioFormatsRegex::AIFF) ||
-        std::regex_match(filename, CDAudioFormatsRegex::FLAC))) {
-    return -1.0;  // No valid audio file format
+  // Check if the file has a valid audio extension
+  if (!(std::regex_match(filename, audio_file_regex.WAV) ||
+        std::regex_match(filename, audio_file_regex.AIFF) ||
+        std::regex_match(filename, audio_file_regex.FLAC))) {
+    LOG_WARNING("Audio file did not match a valid extension.");
+    return -1.0;  // Invalid file format
   }
 
-  std::string command =
-      "ffprobe -i \"" + filename +
-      "\" -show_entries format=duration -v quiet -of csv=\"p=0\"";
-  FILE* pipe = popen(command.c_str(), "r");
-  if (!pipe) return -1;
-
-  char buffer[128];
-  std::string result = "";
-  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-    result += buffer;
+  // Initialize FFmpeg
+  AVFormatContext* format_ctx = nullptr;
+  if (avformat_open_input(&format_ctx, filename.c_str(), nullptr, nullptr) !=
+      0) {
+    LOG_ERROR("AVformat could not open file.");
+    return -1.0;
   }
-  pclose(pipe);
 
-  return std::stod(result);
+  // Retrieve stream info
+  if (avformat_find_stream_info(format_ctx, nullptr) < 0) {
+    LOG_ERROR("Error: Could not retrieve stream info");
+    avformat_close_input(&format_ctx);
+    return -1.0;
+  }
+
+  // Get duration in seconds
+  double duration = static_cast<double>(format_ctx->duration) / AV_TIME_BASE;
+
+  // Clean up
+  avformat_close_input(&format_ctx);
+
+  return duration;
 }
 
 std::string Audio2Image::generateClippedFilename(const std::string& filename,
@@ -45,7 +55,7 @@ bool Audio2Image::clip_audio_file(const std::string filename,
                                   const std::string new_filename,
                                   double new_duration) {
   if (new_duration <= 0) {
-    std::cerr << "Invalid duration: " << new_duration << " seconds\n";
+    LOG_ERROR("Invalid file duration. Duration must be >= 10.0 seconds.");
     return false;
   }
 
@@ -55,7 +65,7 @@ bool Audio2Image::clip_audio_file(const std::string filename,
 
   FILE* pipe = popen(command.str().c_str(), "r");
   if (!pipe) {
-    std::cerr << "Failed to run FFmpeg command\n";
+    LOG_ERROR("Failed to run FFmpeg command.");
     return false;
   }
 
@@ -67,11 +77,10 @@ bool Audio2Image::clip_audio_file(const std::string filename,
   int exit_code = pclose(pipe);
 
   if (exit_code == 0) {
-    std::cout << "Audio successfully clipped to " << new_duration
-              << " seconds: " << new_filename << std::endl;
+    LOG_INFO(std::format("Audio clipped to {}", new_duration));
     return true;
   } else {
-    std::cerr << "Error occurred during audio clipping\n";
+    LOG_ERROR("Error occurred during audio clipping.");
     return false;
   }
 }
@@ -105,12 +114,14 @@ Audio2Image::ffmpeg_import_audio_file(std::string filename) {
   // Open the specified audio file
   if (avformat_open_input(&format_context, filename.c_str(), nullptr, nullptr) <
       0) {
+    LOG_ERROR("FFMPEG ERROR OPENING AUDIO FILE");
     return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_OPENING_AUDIO_FILE, nullptr,
             nullptr, nullptr, std::numeric_limits<int>::max()};
   }
 
   // Retrieve and parse stream information from the file
   if (avformat_find_stream_info(format_context, nullptr) < 0) {
+    LOG_ERROR("FFMPEG ERROR FINDING AUDIO STREAM INFO");
     return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_FINDING_AUDIO_STREAM_INFO, nullptr,
             nullptr, nullptr, std::numeric_limits<int>::max()};
   }
@@ -126,6 +137,7 @@ Audio2Image::ffmpeg_import_audio_file(std::string filename) {
   }
 
   if (audio_stream_idx == -1) {
+    LOG_ERROR("FFMPEG AUDIO STREAM NOT FOUND");
     return {AUDIO2IMAGE_RET_T::FFMPEG_AUDIO_STREAM_NOT_FOUND, nullptr, nullptr,
             nullptr, std::numeric_limits<int>::max()};
   }
@@ -133,6 +145,7 @@ Audio2Image::ffmpeg_import_audio_file(std::string filename) {
   // Allocate a codec context for the audio stream
   AVCodecContext* codec_context = avcodec_alloc_context3(nullptr);
   if (!codec_context) {
+    LOG_ERROR("FFMPEG ERROR ALLOCATING CODEC CONTEXT");
     return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_ALLOCATING_CODEC_CONTEXT, nullptr,
             nullptr, nullptr, std::numeric_limits<int>::max()};
   }
@@ -141,6 +154,7 @@ Audio2Image::ffmpeg_import_audio_file(std::string filename) {
   if (avcodec_parameters_to_context(
           codec_context, format_context->streams[audio_stream_idx]->codecpar) <
       0) {
+    LOG_ERROR("FFMPEG ERROR ALLOCATING CODEC CONTEXT");
     return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_ALLOCATING_CODEC_CONTEXT, nullptr,
             nullptr, nullptr, std::numeric_limits<int>::max()};
   }
@@ -148,12 +162,14 @@ Audio2Image::ffmpeg_import_audio_file(std::string filename) {
   // Find an appropriate decoder for the audio stream
   AVCodec* codec = avcodec_find_decoder(codec_context->codec_id);
   if (!codec) {
+    LOG_ERROR("FFMPEG CODEC NOT FOUND");
     return {AUDIO2IMAGE_RET_T::FFMPEG_CODEC_NOT_FOUND, nullptr, nullptr,
             nullptr, std::numeric_limits<int>::max()};
   }
 
   // Open the codec for decoding
   if (avcodec_open2(codec_context, codec, nullptr) < 0) {
+    LOG_ERROR("FFMPEG CANNOT OPEN CODEC");
     return {AUDIO2IMAGE_RET_T::FFMPEG_CANNOT_OPEN_CODEC, nullptr, nullptr,
             nullptr, std::numeric_limits<int>::max()};
   }
@@ -161,10 +177,12 @@ Audio2Image::ffmpeg_import_audio_file(std::string filename) {
   // Allocate a frame to store decoded audio data
   AVFrame* frame = av_frame_alloc();
   if (!frame) {
+    LOG_ERROR("FFMPEG ERROR ALLOCATING FRAME");
     return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_ALLOCATING_FRAME, nullptr, nullptr,
             nullptr, std::numeric_limits<int>::max()};
   }
 
+  LOG_INFO("GOOD AUDIO FILE IMPORT");
   return {AUDIO2IMAGE_RET_T::GOOD_IMPORT, format_context, codec_context, frame,
           audio_stream_idx};
 }
@@ -256,23 +274,27 @@ Audio2Image::save_average_FFT_and_amplitude(AVFormatContext* format_context,
 ==========================================*/
 
 std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> Audio2Image::audio_file_to_image(
-    std::string filename, uint16_t sampling_freq) {
+    std::string filename) {
   // Verify audio type is valid
-  if (!(std::regex_match(filename, CDAudioFormatsRegex::WAV) ||
-        std::regex_match(filename, CDAudioFormatsRegex::AIFF) ||
-        std::regex_match(filename, CDAudioFormatsRegex::FLAC))) {
+  if (!(std::regex_match(filename, audio_file_regex.WAV) ||
+        std::regex_match(filename, audio_file_regex.AIFF) ||
+        std::regex_match(filename, audio_file_regex.FLAC))) {
+    LOG_ERROR("INVALID AUDIO FILE TYPE");
     return {AUDIO2IMAGE_RET_T::INVALID_AUDIO_FILE_TYPE,
             cv::Mat::zeros(0, 0, CV_8UC3)};
   }
 
   if (this->get_audio_duration(filename) < 10.0) {
+    LOG_ERROR("AUDIO FILE DURATION TOO SHORT");
     return {AUDIO2IMAGE_RET_T::AUDIO_FILE_DURATION_TOO_SHORT,
             cv::Mat::zeros(0, 0, CV_8UC3)};
+
   } else if (this->get_audio_duration(filename) > 10.0) {
     std::string new_filename = this->generateClippedFilename(
         filename, this->AUDIO_DURATION_SEC);  // filename-10sec.format
     if (!this->clip_audio_file(filename, new_filename,
                                this->AUDIO_DURATION_SEC)) {
+      LOG_ERROR("CANNOT CLIP AUDIO FILE");
       return {AUDIO2IMAGE_RET_T::CANNOT_CLIP_AUDIO_FILE,
               cv::Mat::zeros(0, 0, CV_8UC3)};
     }
@@ -280,20 +302,22 @@ std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> Audio2Image::audio_file_to_image(
   }
 
   // Import audio file with FFmpeg
-  auto [exit_status, format_context, codec_context, frame, audio_stream_index] =
-      this->ffmpeg_import_audio_file(filename);
+  auto [exit_status_import, format_context, codec_context, frame,
+        audio_stream_index] = this->ffmpeg_import_audio_file(filename);
 
-  if (exit_status != AUDIO2IMAGE_RET_T::GOOD_IMPORT) {
-    return {exit_status, cv::Mat::zeros(0, 0, CV_8UC3)};
+  if (exit_status_import != AUDIO2IMAGE_RET_T::GOOD_IMPORT) {
+    return {exit_status_import, cv::Mat::zeros(0, 0, CV_8UC3)};
   }
 
-  auto [exit_status, result_image] = this->save_average_FFT_and_amplitude(
-      format_context, codec_context, frame, this->NUM_SAMPLES_PER_SEGMENT,
-      audio_stream_index);
+  auto [exit_status_convert, result_image] =
+      this->save_average_FFT_and_amplitude(format_context, codec_context, frame,
+                                           this->NUM_SAMPLES_PER_SEGMENT,
+                                           audio_stream_index);
 
-  if (exit_status != AUDIO2IMAGE_RET_T::GOOD_CONVERSION) {
-    return {exit_status, cv::Mat::zeros(0, 0, CV_8UC3)};
+  if (exit_status_convert != AUDIO2IMAGE_RET_T::GOOD_CONVERSION) {
+    return {exit_status_convert, cv::Mat::zeros(0, 0, CV_8UC3)};
   }
 
+  LOG_INFO("GOOD AUDIO TO IMAGE CONVERSION");
   return {AUDIO2IMAGE_RET_T::GOOD_AUDIO2IMAGE, cv::Mat::zeros(0, 0, CV_8UC3)};
 }

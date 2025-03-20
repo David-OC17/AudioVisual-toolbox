@@ -1,8 +1,23 @@
 cmake_minimum_required(VERSION 3.10)
 project(Audiovisual)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)  # Strict ISO C++ compliance
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13)
+        message(FATAL_ERROR "GCC 13 or later is required for std::format")
+    endif()
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 15)
+        message(FATAL_ERROR "Clang 15 or later is required for std::format")
+    endif()
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_LESS 1929)
+        message(FATAL_ERROR "MSVC 19.29 or later is required for std::format")
+    endif()
+endif()
 
 # Include directories
 include_directories(
@@ -10,6 +25,7 @@ include_directories(
     /usr/include/opencv4
     /usr/local/include/opencv4
     ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/test
     /usr/include
 )
 
@@ -46,8 +62,15 @@ set(OTHER_LIBS wiringPi)
 include_directories(${AVCODEC_INCLUDE_DIRS} ${AVFORMAT_INCLUDE_DIRS} ${AVUTIL_INCLUDE_DIRS} ${SWSCALE_INCLUDE_DIRS})
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
-# Main executable
-add_executable(main ${SRCS})
-target_link_libraries(main PRIVATE ${OPENCV_LIBS} ${FFTW_LIBS} ${FFMPEG_LIBS} ${OTHER_LIBS})
+# Debug build configuration
+set(CMAKE_CXX_FLAGS_DEBUG "-g -DDEBUG_BUILD")  # -g enables debugging symbols, -DDEBUG_BUILD defines a macro
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")   # -O3 enables full optimizations
 
-set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES "bin/main")
+# Audiovisual executable
+add_executable(Audiovisual ${SRCS})
+target_link_libraries(Audiovisual PRIVATE ${OPENCV_LIBS} ${FFTW_LIBS} ${FFMPEG_LIBS} ${OTHER_LIBS})
+
+# Set the output directory
+set_target_properties(Audiovisual PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+set_directory_properties(PROPERTIES ADDITIONAL_MAKE_CLEAN_FILES "bin/Audiovisual")

@@ -1,10 +1,7 @@
 #pragma once
 
-#include <stdint.h>
-
 #include <cstdlib>
 #include <limits>
-#include <sstream>
 #include <string>
 #include <tuple>
 
@@ -42,16 +39,18 @@ class Audio2Image {
 
   double get_audio_duration(const std::string filename);
 
-  std::string generateClippedFilename(const std::string& filename, double new_duration);
+  std::string generateClippedFilename(const std::string& filename,
+                                             double new_duration);
 
   bool clip_audio_file(const std::string filename,
-                       const std::string new_filename, double new_duration);
+                              const std::string new_filename,
+                              double new_duration);
 
   std::tuple<double, double> compute_average_frequency_and_amplitude(
       fftw_complex* out, int num_samples);
 
-  std::tuple<AUDIO2IMAGE_RET_T, AVFormatContext*, AVCodecContext*, AVFrame*,
-             int>
+  std::tuple<AUDIO2IMAGE_RET_T, AVFormatContext*, AVCodecContext*,
+                    AVFrame*, int>
   ffmpeg_import_audio_file(std::string filename);
 
   std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> save_average_FFT_and_amplitude(
@@ -60,5 +59,5 @@ class Audio2Image {
 
  public:
   std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> audio_file_to_image(
-      std::string filename, uint16_t sampling_freq);
+      std::string filename);
 };

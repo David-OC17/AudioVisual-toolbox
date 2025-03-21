@@ -9,7 +9,7 @@
 
 static void TEST_libraries(); // Pass
 static void TEST_audio_file_regex(); // Pass
-static void TEST_audio2image();
+void TEST_audio_file_to_image();
 
 /* Simple test for FFTW, OpenCV and FFmpeg libraries. */
 void TEST_libraries() {
@@ -67,11 +67,12 @@ void TEST_audio_file_regex() {
 }
 
 /* Simple conversion test from audio to image */
-void TEST_audio2image() {
+void TEST_audio_file_to_image() {
     std::string test_filename = "/home/david/Documents/UNI_S.6/semana_tec1/AudioVisual-toolbox/data/test_audio-street_noise.wav";
     Audio2Image audio2image;
 
     auto [conversion_status, audio_image] = audio2image.audio_file_to_image(test_filename);
+
     cv::imshow("Audio Image", audio_image);
     cv::waitKey(0);
 }

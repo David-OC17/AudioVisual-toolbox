@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstdlib>
 #include <limits>
 #include <string>
 #include <tuple>
@@ -21,8 +20,9 @@ enum class AUDIO2IMAGE_RET_T {
   FFMPEG_ERROR_FINDING_AUDIO_STREAM_INFO,
   FFMPEG_ERROR_ALLOCATING_CODEC_CONTEXT,
   FFMPEG_ERROR_ALLOCATING_FRAME,
-  FFMPEG_ERROR_RECEIVING_FRAME,
-  FFMPEG_ERROR_SENDING_PACKET_TO_DECODER,
+  FFMPEG_ERROR_RECEIVING_FRAME_FROM_CODEC,
+  FFMPEG_ERROR_SENDING_PACKET_TO_CODEC,
+  FFMPEG_ERROR_COPY_CODEC_PARAM_TO_CONTEXT,
 
   FFMPEG_CANNOT_OPEN_CODEC,
   FFMPEG_CODEC_NOT_FOUND,
@@ -31,33 +31,38 @@ enum class AUDIO2IMAGE_RET_T {
 
 class Audio2Image {
  private:
-  const int IMAGE_SIZE_X_PIXELS = 210;
-  const int IMAGE_SIZE_Y_PIXELS = 210;
-  const int NUM_SAMPLES_PER_SEGMENT =
-      CD_AUDIO_FILE_FREQUENCY_HZ * 10 / (210 * 210);
+  const int IMAGE_SIZE_X_PIXELS = SQUARE_IMG_SIZE_X;
+  const int IMAGE_SIZE_Y_PIXELS = SQUARE_IMG_SIZE_Y;
+
+  // Total samples per frame = 1024
+  const int NUM_SAMPLES_PER_SEGMENT = 16;
+  const int SEGMENTS_PER_FRAME = 64;
+
   const double AUDIO_DURATION_SEC = 10.0;
+
+  std::tuple<int, int> normalize_to_pixel_values(const double frequency,
+                                                 const double amplitude);
+
+  AUDIO2IMAGE_RET_T insert_codec_frame_to_image(int& pixel_count,
+                                                int num_samples_per_segment,
+                                                fftw_complex* fft_out,
+                                                cv::Mat& result_image);
 
   double get_audio_duration(const std::string filename);
 
   std::string generateClippedFilename(const std::string& filename,
-                                             double new_duration);
+                                      double new_duration);
 
   bool clip_audio_file(const std::string filename,
-                              const std::string new_filename,
-                              double new_duration);
+                       const std::string new_filename, double new_duration);
 
   std::tuple<double, double> compute_average_frequency_and_amplitude(
       fftw_complex* out, int num_samples);
 
-  std::tuple<AUDIO2IMAGE_RET_T, AVFormatContext*, AVCodecContext*,
-                    AVFrame*, int>
-  ffmpeg_import_audio_file(std::string filename);
-
-  std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> save_average_FFT_and_amplitude(
-      AVFormatContext* format_context, AVCodecContext* codec_context,
-      AVFrame* frame, int num_samples, int audio_stream_index);
-
  public:
   std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> audio_file_to_image(
+      std::string filename);
+
+  std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> audio2image(
       std::string filename);
 };

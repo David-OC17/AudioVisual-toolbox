@@ -51,15 +51,15 @@ pkg_check_modules(AVCODEC REQUIRED libavcodec)
 pkg_check_modules(AVFORMAT REQUIRED libavformat)
 pkg_check_modules(AVUTIL REQUIRED libavutil)
 pkg_check_modules(SWSCALE REQUIRED libswscale)
+pkg_check_modules(SWRESAMPLE REQUIRED libswresample)
 
 # Linker libraries
 set(OPENCV_LIBS opencv_core opencv_imgcodecs opencv_imgproc opencv_highgui opencv_videoio)
 set(FFTW_LIBS ${FFTW3_LIBRARIES})  # Link to fftw3
-set(FFMPEG_LIBS ${AVCODEC_LIBRARIES} ${AVFORMAT_LIBRARIES} ${AVUTIL_LIBRARIES} ${SWSCALE_LIBRARIES})
-set(OTHER_LIBS wiringPi)
+set(FFMPEG_LIBS ${AVCODEC_LIBRARIES} ${AVFORMAT_LIBRARIES} ${AVUTIL_LIBRARIES} ${SWSCALE_LIBRARIES} ${SWRESAMPLE_LIBRARIES})
 
 # Include directories for FFmpeg and FFTW
-include_directories(${AVCODEC_INCLUDE_DIRS} ${AVFORMAT_INCLUDE_DIRS} ${AVUTIL_INCLUDE_DIRS} ${SWSCALE_INCLUDE_DIRS})
+include_directories(${AVCODEC_INCLUDE_DIRS} ${AVFORMAT_INCLUDE_DIRS} ${AVUTIL_INCLUDE_DIRS} ${SWSCALE_INCLUDE_DIRS} ${SWRESAMPLE_INCLUDE_DIRS})
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # Debug build configuration
@@ -68,7 +68,9 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")   # -O3 enables full optimizations
 
 # Audiovisual executable
 add_executable(Audiovisual ${SRCS})
-target_link_libraries(Audiovisual PRIVATE ${OPENCV_LIBS} ${FFTW_LIBS} ${FFMPEG_LIBS} ${OTHER_LIBS})
+
+# Link libraries explicitly
+target_link_libraries(Audiovisual PRIVATE ${OPENCV_LIBS} ${FFTW_LIBS} ${FFMPEG_LIBS} pthread m)
 
 # Set the output directory
 set_target_properties(Audiovisual PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

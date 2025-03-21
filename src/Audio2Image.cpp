@@ -1,8 +1,80 @@
 #include "Audio2Image.h"
 
+void print_complex_fft(const std::vector<std::complex<double>>& fft_result) {
+  for (const auto& cplx : fft_result) {
+    std::cout << "Real: " << cplx.real() << " Imag: " << cplx.imag() << std::endl;
+  }
+}
+
 /*==========================================
 =                 PRIVATE                  =
 ==========================================*/
+
+std::tuple<int, int> Audio2Image::normalize_to_pixel_values(
+    const double frequency, const double amplitude) {
+  if (amplitude < -1.0 || amplitude > 1.0) {
+    LOG_WARNING(std::format("Invalid amplitude value: {}", amplitude));
+    return std::make_tuple(std::numeric_limits<int>::min(),
+                           std::numeric_limits<int>::min());
+  }
+
+  int frequency_value = static_cast<int>(
+      (frequency / MAX_FREQUENCY_IN_AUDIO_SIGNAL_HZ) * MAX_PIXEL_VALUE);
+
+  // Normalize amplitude to a 0-255 scale using a logarithmic scale
+  double normalized_amplitude = std::clamp(amplitude, -1.0, 1.0);
+  double log_amplitude =
+      std::log10(std::abs(normalized_amplitude) +
+                 1e-10);  // Prevent log(0) by adding a small epsilon
+
+  // Map the logarithmic value to the 0-255 scale
+  int amplitude_value =
+      static_cast<int>((log_amplitude * MAX_PIXEL_VALUE) /
+                       std::log10(2.0));  // Scale based on log10(2)
+
+  amplitude_value = std::clamp(amplitude_value, 0, 255);
+  frequency_value = std::clamp(frequency_value, 0, 255);
+
+  return std::make_tuple(frequency_value, amplitude_value);
+}
+
+
+AUDIO2IMAGE_RET_T Audio2Image::insert_codec_frame_to_image(
+    int& pixel_count, int num_samples_per_segment, fftw_complex* fft_out,
+    cv::Mat& result_image) {
+  // Expect this->SEGMENTS_PER_FRAME iterations (64)
+  for (int frame_sec_increment = 0; frame_sec_increment < 1024;
+       frame_sec_increment += num_samples_per_segment) {
+    auto [average_frequency, average_amplitude] =
+        this->compute_average_frequency_and_amplitude(fft_out,
+                                                      num_samples_per_segment);
+    auto [norm_average_frequency, norm_average_amplitude] =
+        this->normalize_to_pixel_values(average_frequency, average_amplitude);
+
+    // Compute pixel coordinates
+    int y_pixel = pixel_count / this->IMAGE_SIZE_Y_PIXELS;
+    int x_pixel = pixel_count % this->IMAGE_SIZE_X_PIXELS;
+
+    // Check pixel are in-bounds
+    if (y_pixel >= this->IMAGE_SIZE_Y_PIXELS ||
+        x_pixel >= this->IMAGE_SIZE_X_PIXELS) {
+      LOG_ERROR("UNFILLED MATRIX");
+      return AUDIO2IMAGE_RET_T::UNFILLED_MATRIX;
+    }
+
+    cv::Vec3b& pixel = result_image.at<cv::Vec3b>(y_pixel, x_pixel);
+    pixel[0] = norm_average_frequency;  // Blue channel
+    pixel[1] = 0;                       // Green channel
+    pixel[2] = norm_average_amplitude;  // Red channel
+    pixel_count++;
+
+    LOG_INFO(std::format("Norm avrg freq: {}, and norm avrg amp: {}",
+                         norm_average_frequency, norm_average_amplitude));
+
+    LOG_INFO(std::format("Cell X:{} Y:{} updated.", x_pixel, y_pixel));
+  }
+}
+
 
 double Audio2Image::get_audio_duration(const std::string filename) {
   // Check if the file has a valid audio extension
@@ -37,6 +109,7 @@ double Audio2Image::get_audio_duration(const std::string filename) {
   return duration;
 }
 
+
 std::string Audio2Image::generateClippedFilename(const std::string& filename,
                                                  double new_duration) {
   size_t lastDot = filename.find_last_of(".");
@@ -50,6 +123,7 @@ std::string Audio2Image::generateClippedFilename(const std::string& filename,
 
   return namePart + "-" + std::to_string((int)new_duration) + "sec" + extPart;
 }
+
 
 bool Audio2Image::clip_audio_file(const std::string filename,
                                   const std::string new_filename,
@@ -85,6 +159,7 @@ bool Audio2Image::clip_audio_file(const std::string filename,
   }
 }
 
+
 std::tuple<double, double> Audio2Image::compute_average_frequency_and_amplitude(
     fftw_complex* out, int num_samples) {
   double sum_frequency = 0;
@@ -106,174 +181,165 @@ std::tuple<double, double> Audio2Image::compute_average_frequency_and_amplitude(
   return {average_frequency, average_amplitude};
 }
 
-std::tuple<AUDIO2IMAGE_RET_T, AVFormatContext*, AVCodecContext*, AVFrame*, int>
-Audio2Image::ffmpeg_import_audio_file(std::string filename) {
-  av_register_all();
-  AVFormatContext* format_context = nullptr;
+/*==========================================
+=                  PUBLIC                  =
+==========================================*/
 
-  // Open the specified audio file
-  if (avformat_open_input(&format_context, filename.c_str(), nullptr, nullptr) <
+std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> Audio2Image::audio_file_to_image(
+    std::string filename) {
+  cv::Mat result_image(this->IMAGE_SIZE_X_PIXELS, this->IMAGE_SIZE_Y_PIXELS,
+                       CV_8UC3, cv::Scalar(0, 0, 0));
+  int pixel_count = 0;
+
+  // Initialize FFmpeg
+  avformat_network_init();
+
+  AVFormatContext* format_ctx = nullptr;
+  if (avformat_open_input(&format_ctx, filename.c_str(), nullptr, nullptr) !=
       0) {
     LOG_ERROR("FFMPEG ERROR OPENING AUDIO FILE");
-    return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_OPENING_AUDIO_FILE, nullptr,
-            nullptr, nullptr, std::numeric_limits<int>::max()};
+    return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_OPENING_AUDIO_FILE, cv::Mat()};
   }
 
-  // Retrieve and parse stream information from the file
-  if (avformat_find_stream_info(format_context, nullptr) < 0) {
+  if (avformat_find_stream_info(format_ctx, nullptr) < 0) {
     LOG_ERROR("FFMPEG ERROR FINDING AUDIO STREAM INFO");
-    return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_FINDING_AUDIO_STREAM_INFO, nullptr,
-            nullptr, nullptr, std::numeric_limits<int>::max()};
+    return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_FINDING_AUDIO_STREAM_INFO,
+            cv::Mat()};
   }
 
-  // Identify the audio stream within the file
-  int audio_stream_idx = -1;
-  for (int i = 0; i < format_context->nb_streams; i++) {
-    if (format_context->streams[i]->codecpar->codec_type ==
-        AVMEDIA_TYPE_AUDIO) {
-      audio_stream_idx = i;
+  AVCodec* codec = nullptr;
+  AVCodecContext* codec_ctx = nullptr;
+  AVStream* audio_stream = nullptr;
+  for (int i = 0; i < format_ctx->nb_streams; ++i) {
+    audio_stream = format_ctx->streams[i];
+    codec = avcodec_find_decoder(audio_stream->codecpar->codec_id);
+    if (codec) {
+      codec_ctx = avcodec_alloc_context3(codec);
+      if (avcodec_parameters_to_context(codec_ctx, audio_stream->codecpar) <
+          0) {
+        LOG_ERROR("FFMPEG ERROR COPY CODEC PARAM TO CONTEXT");
+        return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_COPY_CODEC_PARAM_TO_CONTEXT,
+                cv::Mat()};
+      }
+      if (avcodec_open2(codec_ctx, codec, nullptr) < 0) {
+        LOG_ERROR("FFMPEG CANNOT OPEN CODED");
+        return {AUDIO2IMAGE_RET_T::FFMPEG_CANNOT_OPEN_CODEC, cv::Mat()};
+      }
       break;
     }
   }
 
-  if (audio_stream_idx == -1) {
+  if (!audio_stream) {
+    std::cerr << "No audio stream found." << std::endl;
     LOG_ERROR("FFMPEG AUDIO STREAM NOT FOUND");
-    return {AUDIO2IMAGE_RET_T::FFMPEG_AUDIO_STREAM_NOT_FOUND, nullptr, nullptr,
-            nullptr, std::numeric_limits<int>::max()};
+    return {AUDIO2IMAGE_RET_T::FFMPEG_AUDIO_STREAM_NOT_FOUND, cv::Mat()};
   }
 
-  // Allocate a codec context for the audio stream
-  AVCodecContext* codec_context = avcodec_alloc_context3(nullptr);
-  if (!codec_context) {
-    LOG_ERROR("FFMPEG ERROR ALLOCATING CODEC CONTEXT");
-    return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_ALLOCATING_CODEC_CONTEXT, nullptr,
-            nullptr, nullptr, std::numeric_limits<int>::max()};
-  }
+  SwrContext* swr_ctx = swr_alloc();
+  swr_alloc_set_opts(swr_ctx, AV_CH_LAYOUT_MONO, AV_SAMPLE_FMT_FLT,
+                     codec_ctx->sample_rate, codec_ctx->channel_layout,
+                     codec_ctx->sample_fmt, codec_ctx->sample_rate, 0, nullptr);
+  swr_init(swr_ctx);
 
-  // Copy codec parameters from stream to codec context
-  if (avcodec_parameters_to_context(
-          codec_context, format_context->streams[audio_stream_idx]->codecpar) <
-      0) {
-    LOG_ERROR("FFMPEG ERROR ALLOCATING CODEC CONTEXT");
-    return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_ALLOCATING_CODEC_CONTEXT, nullptr,
-            nullptr, nullptr, std::numeric_limits<int>::max()};
-  }
-
-  // Find an appropriate decoder for the audio stream
-  AVCodec* codec = avcodec_find_decoder(codec_context->codec_id);
-  if (!codec) {
-    LOG_ERROR("FFMPEG CODEC NOT FOUND");
-    return {AUDIO2IMAGE_RET_T::FFMPEG_CODEC_NOT_FOUND, nullptr, nullptr,
-            nullptr, std::numeric_limits<int>::max()};
-  }
-
-  // Open the codec for decoding
-  if (avcodec_open2(codec_context, codec, nullptr) < 0) {
-    LOG_ERROR("FFMPEG CANNOT OPEN CODEC");
-    return {AUDIO2IMAGE_RET_T::FFMPEG_CANNOT_OPEN_CODEC, nullptr, nullptr,
-            nullptr, std::numeric_limits<int>::max()};
-  }
-
-  // Allocate a frame to store decoded audio data
+  // Allocate frame for reading data
   AVFrame* frame = av_frame_alloc();
-  if (!frame) {
-    LOG_ERROR("FFMPEG ERROR ALLOCATING FRAME");
-    return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_ALLOCATING_FRAME, nullptr, nullptr,
-            nullptr, std::numeric_limits<int>::max()};
-  }
-
-  LOG_INFO("GOOD AUDIO FILE IMPORT");
-  return {AUDIO2IMAGE_RET_T::GOOD_IMPORT, format_context, codec_context, frame,
-          audio_stream_idx};
-}
-
-std::tuple<AUDIO2IMAGE_RET_T, cv::Mat>
-Audio2Image::save_average_FFT_and_amplitude(AVFormatContext* format_context,
-                                            AVCodecContext* codec_context,
-                                            AVFrame* frame, int num_samples,
-                                            int audio_stream_index) {
-  cv::Mat result_image(this->IMAGE_SIZE_X_PIXELS, this->IMAGE_SIZE_Y_PIXELS,
-                       CV_8UC3, cv::Scalar(0, 0, 0));
   AVPacket packet;
-  int ret;
-  int x_pixel = 0, y_pixel = 0, pixel_count = 0;
+  std::vector<float> audio_data;
 
-  // Read packets from the audio stream
-  while (av_read_frame(format_context, &packet) >= 0) {
-    if (packet.stream_index == audio_stream_index) {
-      // Send the packet to the decoder
-      ret = avcodec_send_packet(codec_context, &packet);
+  // Read frames and process audio
+  while (av_read_frame(format_ctx, &packet) >= 0) {
+    if (packet.stream_index == audio_stream->index) {
+      int ret = avcodec_send_packet(codec_ctx, &packet);
       if (ret < 0) {
-        av_packet_unref(&packet);
-        return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_SENDING_PACKET_TO_DECODER,
-                result_image};
+        LOG_ERROR("FFMPEG ERROR SENDING PACKET TO CODEC");
+        return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_SENDING_PACKET_TO_CODEC,
+                cv::Mat()};
       }
 
       while (ret >= 0) {
-        ret = avcodec_receive_frame(codec_context, frame);
+        ret = avcodec_receive_frame(codec_ctx, frame);
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
           break;
-        } else if (ret < 0) {
-          av_packet_unref(&packet);
-          return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_RECEIVING_FRAME,
-                  result_image};
+        }
+        if (ret < 0) {
+          LOG_ERROR("FFMPEG ERROR RECEIVING FRAME FROM CODEC");
+          return {AUDIO2IMAGE_RET_T::FFMPEG_ERROR_RECEIVING_FRAME_FROM_CODEC,
+                  cv::Mat()};
         }
 
-        int channels = frame->channels;
-        if (channels > 0) {
-          uint8_t* raw_audio_data = frame->extended_data[0];
-          double* audio_data = reinterpret_cast<double*>(raw_audio_data);
-
-          // Perform FFT on audio data
-          fftw_complex* out =
-              (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * num_samples);
-          fftw_plan p =
-              fftw_plan_dft_r2c_1d(num_samples, audio_data, out, FFTW_ESTIMATE);
-          fftw_execute(p);
-
-          auto [average_frequency, average_amplitude] =
-              compute_average_frequency_and_amplitude(out, num_samples);
-
-          // Compute pixel coordinates
-          y_pixel = pixel_count / this->IMAGE_SIZE_Y_PIXELS;
-          x_pixel = pixel_count % this->IMAGE_SIZE_X_PIXELS;
-
-          // Check pixel are in-bounds
-          if (y_pixel >= this->IMAGE_SIZE_Y_PIXELS ||
-              x_pixel >= this->IMAGE_SIZE_X_PIXELS) {
-            fftw_destroy_plan(p);
-            fftw_free(out);
-            return {AUDIO2IMAGE_RET_T::UNFILLED_MATRIX, result_image};
-          }
-
-          // Store computed values in the image matrix
-          cv::Vec3b& pixel = result_image.at<cv::Vec3b>(y_pixel, x_pixel);
-          pixel[0] = average_frequency;  // Blue channel
-          pixel[1] = 0;                  // Green channel
-          pixel[2] = average_amplitude;  // Red channel
-          pixel_count++;
-
-          // Clean up
-          fftw_destroy_plan(p);
-          fftw_free(out);
+        // Convert audio samples to float
+        int num_samples = frame->nb_samples;
+        audio_data.resize(num_samples);
+        for (int i = 0; i < num_samples; ++i) {
+          audio_data[i] =
+              frame->data[0][i] / 32768.0f;  // Assuming 16-bit PCM data
         }
-        av_packet_unref(&packet);
+
+        // Perform FFTW on audio data
+        int n = num_samples;
+        fftw_complex* in = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * n);
+        fftw_complex* out =
+            (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * n);
+        fftw_plan p = fftw_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+
+        for (int i = 0; i < n; ++i) {
+          in[i][0] = audio_data[i];  // Real part
+          in[i][1] = 0;              // Imaginary part
+        }
+
+        fftw_execute(p);
+
+        // this->insert_codec_frame_to_image(pixel_count, num_samples, out,
+        //                                    result_image);
+
+        ////////////////////////////////////////
+        std::vector<std::complex<double>> fft_result(n);
+        for (int i = 0; i < n; ++i) {
+          fft_result[i] = std::complex<double>(out[i][0], out[i][1]);
+        }
+
+        print_complex_fft(fft_result);
+        ////////////////////////////////////////
+
+        fftw_destroy_plan(p);
+        fftw_free(in);
+        fftw_free(out);
       }
     }
+
     av_packet_unref(&packet);
   }
 
+  // Clean up
+  av_frame_free(&frame);
+  avcodec_free_context(&codec_ctx);
+  avformat_close_input(&format_ctx);
+  swr_free(&swr_ctx);
+
+  // Fill empty matrix cells if necessary
+  if (pixel_count <= this->IMAGE_SIZE_X_PIXELS * IMAGE_SIZE_Y_PIXELS) {
+    LOG_INFO("Filling matrix with valid values");
+
+    while (pixel_count <= this->IMAGE_SIZE_X_PIXELS * IMAGE_SIZE_Y_PIXELS) {
+      int y_pixel = pixel_count / this->IMAGE_SIZE_Y_PIXELS;
+      int x_pixel = pixel_count % this->IMAGE_SIZE_X_PIXELS;
+
+      cv::Vec3b& pixel = result_image.at<cv::Vec3b>(y_pixel, x_pixel);
+      pixel[0] = 0;  // Blue channel
+      pixel[1] = 0;  // Green channel
+      pixel[2] = 0;  // Red channel
+      pixel_count++;
+    }
+  }
+
+  // Return result depending on whether the matrix was filled
   return (pixel_count == this->IMAGE_SIZE_X_PIXELS * this->IMAGE_SIZE_Y_PIXELS)
              ? std::make_tuple(AUDIO2IMAGE_RET_T::GOOD_CONVERSION, result_image)
              : std::make_tuple(AUDIO2IMAGE_RET_T::UNFILLED_MATRIX,
                                result_image);
 }
 
-/*==========================================
-=                  PUBLIC                  =
-==========================================*/
-
-std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> Audio2Image::audio_file_to_image(
+std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> Audio2Image::audio2image(
     std::string filename) {
   // Verify audio type is valid
   if (!(std::regex_match(filename, audio_file_regex.WAV) ||
@@ -301,22 +367,7 @@ std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> Audio2Image::audio_file_to_image(
     filename = new_filename;
   }
 
-  // Import audio file with FFmpeg
-  auto [exit_status_import, format_context, codec_context, frame,
-        audio_stream_index] = this->ffmpeg_import_audio_file(filename);
-
-  if (exit_status_import != AUDIO2IMAGE_RET_T::GOOD_IMPORT) {
-    return {exit_status_import, cv::Mat::zeros(0, 0, CV_8UC3)};
-  }
-
-  auto [exit_status_convert, result_image] =
-      this->save_average_FFT_and_amplitude(format_context, codec_context, frame,
-                                           this->NUM_SAMPLES_PER_SEGMENT,
-                                           audio_stream_index);
-
-  if (exit_status_convert != AUDIO2IMAGE_RET_T::GOOD_CONVERSION) {
-    return {exit_status_convert, cv::Mat::zeros(0, 0, CV_8UC3)};
-  }
+  // TODO add call to audio_file_to_image()
 
   LOG_INFO("GOOD AUDIO TO IMAGE CONVERSION");
   return {AUDIO2IMAGE_RET_T::GOOD_AUDIO2IMAGE, cv::Mat::zeros(0, 0, CV_8UC3)};

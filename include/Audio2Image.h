@@ -10,6 +10,7 @@ enum class AUDIO2IMAGE_RET_T {
   GOOD_IMPORT,
   GOOD_CONVERSION,
   GOOD_AUDIO2IMAGE,
+  GOOD_FRAME_INSERTION_TO_IMAGE,
 
   UNFILLED_MATRIX,
   INVALID_AUDIO_FILE_TYPE,
@@ -34,19 +35,19 @@ class Audio2Image {
   const int IMAGE_SIZE_X_PIXELS = SQUARE_IMG_SIZE_X;
   const int IMAGE_SIZE_Y_PIXELS = SQUARE_IMG_SIZE_Y;
 
-  // Total samples per frame = 1024
   const int NUM_SAMPLES_PER_SEGMENT = 16;
   const int SEGMENTS_PER_FRAME = 64;
 
   const double AUDIO_DURATION_SEC = 10.0;
 
+  void print_complex_fft(fftw_complex* out, int num_samples);
+
   std::tuple<int, int> normalize_to_pixel_values(const double frequency,
                                                  const double amplitude);
 
-  AUDIO2IMAGE_RET_T insert_codec_frame_to_image(int& pixel_count,
-                                                int num_samples_per_segment,
-                                                fftw_complex* fft_out,
-                                                cv::Mat& result_image);
+  AUDIO2IMAGE_RET_T insert_codec_frame_to_image(
+      int& pixel_count,
+      std::vector<float>& audio_data, cv::Mat& result_image);
 
   double get_audio_duration(const std::string filename);
 
@@ -63,6 +64,5 @@ class Audio2Image {
   std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> audio_file_to_image(
       std::string filename);
 
-  std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> audio2image(
-      std::string filename);
+  std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> audio2image(std::string filename);
 };

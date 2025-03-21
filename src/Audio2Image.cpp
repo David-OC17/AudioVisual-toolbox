@@ -1,14 +1,20 @@
 #include "Audio2Image.h"
 
-void print_complex_fft(const std::vector<std::complex<double>>& fft_result) {
-  for (const auto& cplx : fft_result) {
-    std::cout << "Real: " << cplx.real() << " Imag: " << cplx.imag() << std::endl;
-  }
-}
-
 /*==========================================
 =                 PRIVATE                  =
 ==========================================*/
+
+void Audio2Image::print_complex_fft(fftw_complex* out, int num_samples) {
+  std::vector<std::complex<double>> fft_result(num_samples);
+  for (int i = 0; i < num_samples; ++i) {
+    fft_result[i] = std::complex<double>(out[i][0], out[i][1]);
+  }
+
+  for (const auto& cplx : fft_result) {
+    std::cout << "Real: " << cplx.real() << " Imag: " << cplx.imag()
+              << std::endl;
+  }
+}
 
 std::tuple<int, int> Audio2Image::normalize_to_pixel_values(
     const double frequency, const double amplitude) {
@@ -38,43 +44,81 @@ std::tuple<int, int> Audio2Image::normalize_to_pixel_values(
   return std::make_tuple(frequency_value, amplitude_value);
 }
 
-
 AUDIO2IMAGE_RET_T Audio2Image::insert_codec_frame_to_image(
-    int& pixel_count, int num_samples_per_segment, fftw_complex* fft_out,
-    cv::Mat& result_image) {
-  // Expect this->SEGMENTS_PER_FRAME iterations (64)
-  for (int frame_sec_increment = 0; frame_sec_increment < 1024;
-       frame_sec_increment += num_samples_per_segment) {
+    int& pixel_count,
+    std::vector<float>& audio_data, cv::Mat& result_image) {
+  // Create an FFT plan for a single segment
+  fftw_complex* in = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) *
+                                                this->NUM_SAMPLES_PER_SEGMENT);
+  fftw_complex* out = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) *
+                                                 this->NUM_SAMPLES_PER_SEGMENT);
+  fftw_plan p = fftw_plan_dft_1d(this->NUM_SAMPLES_PER_SEGMENT, in, out, FFTW_FORWARD,
+                                 FFTW_ESTIMATE);
+
+  // Process the FFT for each window (segment)
+  for (int frame_sec_increment = 0;
+       frame_sec_increment < this->SEGMENTS_PER_FRAME; ++frame_sec_increment) {
+    int window_start = frame_sec_increment * NUM_SAMPLES_PER_SEGMENT;
+
+    if (window_start + this->NUM_SAMPLES_PER_SEGMENT > this->NUM_SAMPLES_PER_SEGMENT * this->SEGMENTS_PER_FRAME) {
+      LOG_ERROR("Window exceeds audio_data range.");
+      return AUDIO2IMAGE_RET_T::UNFILLED_MATRIX;
+    }
+
+    // Extract the current sliding window of audio data (16 samples)
+    for (int i = 0; i < this->NUM_SAMPLES_PER_SEGMENT; ++i) {
+      in[i][0] = audio_data[window_start + i];  // Real part
+      in[i][1] = 0;                             // Imaginary part
+    }
+
+    // Execute the FFT for this window
+    fftw_execute(p);
+
+    this->print_complex_fft(out, this->NUM_SAMPLES_PER_SEGMENT);
+
+    // Compute the average frequency and amplitude for the current window
     auto [average_frequency, average_amplitude] =
-        this->compute_average_frequency_and_amplitude(fft_out,
-                                                      num_samples_per_segment);
+        this->compute_average_frequency_and_amplitude(out,
+                                                      this->NUM_SAMPLES_PER_SEGMENT);
+
+    // Normalize the average frequency and amplitude to pixel values
     auto [norm_average_frequency, norm_average_amplitude] =
         this->normalize_to_pixel_values(average_frequency, average_amplitude);
 
-    // Compute pixel coordinates
-    int y_pixel = pixel_count / this->IMAGE_SIZE_Y_PIXELS;
+    // Compute pixel coordinates based on pixel_count
+    int y_pixel = pixel_count / this->IMAGE_SIZE_X_PIXELS;
     int x_pixel = pixel_count % this->IMAGE_SIZE_X_PIXELS;
 
-    // Check pixel are in-bounds
+    // Check if the pixel is within bounds of the image
     if (y_pixel >= this->IMAGE_SIZE_Y_PIXELS ||
         x_pixel >= this->IMAGE_SIZE_X_PIXELS) {
       LOG_ERROR("UNFILLED MATRIX");
       return AUDIO2IMAGE_RET_T::UNFILLED_MATRIX;
     }
 
+    // Set the pixel values in the result image
     cv::Vec3b& pixel = result_image.at<cv::Vec3b>(y_pixel, x_pixel);
-    pixel[0] = norm_average_frequency;  // Blue channel
-    pixel[1] = 0;                       // Green channel
-    pixel[2] = norm_average_amplitude;  // Red channel
+    pixel[0] = norm_average_frequency;  // Blue channel (normalized frequency)
+    pixel[1] = 0;                       // Green channel (unused)
+    pixel[2] = norm_average_amplitude;  // Red channel (normalized amplitude)
+
+    // Increment pixel_count for the next iteration
     pixel_count++;
 
-    LOG_INFO(std::format("Norm avrg freq: {}, and norm avrg amp: {}",
-                         norm_average_frequency, norm_average_amplitude));
-
+    // Log the results for debugging
+    LOG_INFO(std::format(
+        "Norm average frequency: {}, and norm average amplitude: {}",
+        norm_average_frequency, norm_average_amplitude));
     LOG_INFO(std::format("Cell X:{} Y:{} updated.", x_pixel, y_pixel));
   }
-}
 
+  // Clean up FFT resources
+  fftw_destroy_plan(p);
+  fftw_free(in);
+  fftw_free(out);
+
+  return AUDIO2IMAGE_RET_T::GOOD_FRAME_INSERTION_TO_IMAGE;
+}
 
 double Audio2Image::get_audio_duration(const std::string filename) {
   // Check if the file has a valid audio extension
@@ -109,7 +153,6 @@ double Audio2Image::get_audio_duration(const std::string filename) {
   return duration;
 }
 
-
 std::string Audio2Image::generateClippedFilename(const std::string& filename,
                                                  double new_duration) {
   size_t lastDot = filename.find_last_of(".");
@@ -123,7 +166,6 @@ std::string Audio2Image::generateClippedFilename(const std::string& filename,
 
   return namePart + "-" + std::to_string((int)new_duration) + "sec" + extPart;
 }
-
 
 bool Audio2Image::clip_audio_file(const std::string filename,
                                   const std::string new_filename,
@@ -158,7 +200,6 @@ bool Audio2Image::clip_audio_file(const std::string filename,
     return false;
   }
 }
-
 
 std::tuple<double, double> Audio2Image::compute_average_frequency_and_amplitude(
     fftw_complex* out, int num_samples) {
@@ -275,35 +316,8 @@ std::tuple<AUDIO2IMAGE_RET_T, cv::Mat> Audio2Image::audio_file_to_image(
               frame->data[0][i] / 32768.0f;  // Assuming 16-bit PCM data
         }
 
-        // Perform FFTW on audio data
-        int n = num_samples;
-        fftw_complex* in = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * n);
-        fftw_complex* out =
-            (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * n);
-        fftw_plan p = fftw_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
-
-        for (int i = 0; i < n; ++i) {
-          in[i][0] = audio_data[i];  // Real part
-          in[i][1] = 0;              // Imaginary part
-        }
-
-        fftw_execute(p);
-
-        // this->insert_codec_frame_to_image(pixel_count, num_samples, out,
-        //                                    result_image);
-
-        ////////////////////////////////////////
-        std::vector<std::complex<double>> fft_result(n);
-        for (int i = 0; i < n; ++i) {
-          fft_result[i] = std::complex<double>(out[i][0], out[i][1]);
-        }
-
-        print_complex_fft(fft_result);
-        ////////////////////////////////////////
-
-        fftw_destroy_plan(p);
-        fftw_free(in);
-        fftw_free(out);
+        this->insert_codec_frame_to_image(pixel_count, audio_data,
+                                          result_image);
       }
     }
 
